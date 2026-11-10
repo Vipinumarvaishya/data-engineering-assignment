@@ -1,0 +1,142 @@
+import os
+import time
+import pandas as pd
+from utils import PipelineRunTracker
+
+class DataPipeline:
+    def __init__(self, input_path="data/sample_input.csv"):
+        self.input_path = input_path
+        self.tracker = PipelineRunTracker("Financial_Transactions_Pipeline")
+        self.output_dir = "output"
+        os.makedirs(self.output_dir, exist_ok=True)
+
+    def task_ingest(self, max_retries=3, timeout_seconds=5):
+        self.tracker.start()
+        attempt = 0
+        while attempt < max_retries:
+            start_t = time.time()
+            try:
+                if time.time() - start_t > timeout_seconds:
+                    raise TimeoutError("Ingestion task timed out.")
+                
+                if not os.path.exists(self.input_path):
+                    raise FileNotFoundError(f"Input file not found at {self.input_path}")
+                
+                df = pd.read_csv(self.input_path)
+                self.tracker.update_metrics(input_rows=len(df))
+                print(f"-> Ingested {len(df)} rows from {self.input_path}")
+                return df
+            except Exception as e:
+                attempt += 1
+                print(f"Warning: Ingestion attempt {attempt} failed due to: {e}. Retrying...")
+                time.sleep(1)
+                if attempt >= max_retries:
+                    self.tracker.finish(status="FAILED", error_message=str(e))
+                    raise RuntimeError("Critical Upstream Ingestion Failed after max retries.")
+
+    def task_validate_and_quarantine(self, df):
+        if df.empty:
+            raise ValueError("Batch is empty. Upstream publication halted.")
+
+        duplicates = df[df.duplicated(subset=["transaction_id"], keep="first")]
+        dup_count = len(duplicates)
+        df_dedup = df.drop_duplicates(subset=["transaction_id"], keep="first").copy()
+
+        def is_valid_row(row):
+            if pd.isna(row["transaction_id"]) or pd.isna(row["customer_id"]):
+                return False, "Missing primary or foreign key"
+            try:
+                amt = float(row["amount"])
+                if amt <= 0:
+                    return False, "Amount must be greater than zero"
+            except ValueError:
+                return False, "Malformed amount value"
+            
+            try:
+                pd.to_datetime(row["transaction_date"])
+            except Exception:
+                return False, "Invalid ISO timestamp format"
+                
+            return True, "OK"
+
+        validation_results = df_dedup.apply(is_valid_row, axis=1)
+        df_dedup["is_valid"] = [res[0] for res in validation_results]
+        df_dedup["failure_reason"] = [res[1] for res in validation_results]
+
+        valid_df = df_dedup[df_dedup["is_valid"]].copy()
+        rejected_df = df_dedup[~df_dedup["is_valid"]].copy()
+
+        rejected_df.drop(columns=["is_valid"], inplace=True)
+        rejected_df.to_csv(os.path.join(self.output_dir, "quarantine_rejects.csv"), index=False)
+
+        self.tracker.update_metrics(
+            valid_rows=len(valid_df),
+            rejected_rows=len(rejected_df),
+            duplicate_rows=dup_count
+        )
+        print(f"-> Validation complete. Valid: {len(valid_df)}, Quarantined: {len(rejected_df)}, Duplicates dropped: {dup_count}")
+        return valid_df
+
+    def task_transform(self, df):
+        if df.empty:
+            return df
+
+        def categorize_amount(amt):
+            if amt < 100:
+                return "LOW"
+            elif amt <= 500:
+                return "MEDIUM"
+            else:
+                return "HIGH"
+
+        df["amount_category"] = df["amount"].apply(categorize_amount)
+        df["processed_timestamp"] = pd.Timestamp.utcnow().isoformat()
+        
+        df = df[["transaction_id", "customer_id", "amount", "amount_category", "transaction_date", "status", "processed_timestamp"]]
+        return df
+
+    def task_publish_and_reconcile(self, df):
+        output_path = os.path.join(self.output_dir, "processed_target.csv")
+        df.to_csv(output_path, index=False)
+        
+        source_total_input = self.tracker.metrics["input_rows"]
+        valid_count = self.tracker.metrics["valid_rows"]
+        rejected_count = self.tracker.metrics["rejected_rows"]
+        duplicate_count = self.tracker.metrics["duplicate_rows"]
+        
+        report_content = f"""========================================
+       PIPELINE RECONCILIATION REPORT
+========================================
+Run ID         : {self.tracker.run_id}
+Pipeline Name  : {self.tracker.pipeline_name}
+
+Total Input Rows      : {source_total_input}
+Duplicate Rows Dropped: {duplicate_count}
+Valid Processed Rows  : {valid_count}
+Quarantined/Rejected  : {rejected_count}
+Status                : SUCCESS
+========================================
+"""
+        report_path = os.path.join(self.output_dir, "reconciliation_report.txt")
+        with open(report_path, "w") as f:
+            f.write(report_content)
+            
+        self.tracker.finish(status="SUCCESS")
+        return report_path
+
+    def run_workflow(self):
+        try:
+            df_raw = self.task_ingest()
+            df_valid = self.task_validate_and_quarantine(df_raw)
+            if df_valid.empty and not df_raw.empty:
+                raise ValueError("Downstream publication blocked: Zero valid records.")
+            df_transformed = self.task_transform(df_valid)
+            report = self.task_publish_and_reconcile(df_transformed)
+            return report
+        except Exception as e:
+            self.tracker.finish(status="FAILED", error_message=str(e))
+            raise e
+
+if __name__ == "__main__":
+    pipeline = DataPipeline("data/sample_input.csv")
+    pipeline.run_workflow()

@@ -1,0 +1,39 @@
+import logging
+import time
+from datetime import datetime
+import json
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+class PipelineRunTracker:
+    def __init__(self, pipeline_name):
+        self.pipeline_name = pipeline_name
+        self.run_id = f"RUN-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        self.start_time = None
+        self.end_time = None
+        self.metrics = {
+            "run_id": self.run_id,
+            "pipeline": pipeline_name,
+            "input_rows": 0,
+            "valid_rows": 0,
+            "rejected_rows": 0,
+            "duplicate_rows": 0,
+            "status": "STARTED"
+        }
+
+    def start(self):
+        self.start_time = datetime.utcnow()
+        logging.info(f"[{self.run_id}] Pipeline '{self.pipeline_name}' started at {self.start_time}")
+
+    def update_metrics(self, **kwargs):
+        self.metrics.update(kwargs)
+
+    def finish(self, status="SUCCESS", error_message=None):
+        self.end_time = datetime.utcnow()
+        self.metrics["status"] = status
+        self.metrics["duration_seconds"] = (self.end_time - self.start_time).total_seconds()
+        if error_message:
+            self.metrics["error_message"] = error_message
+        
+        logging.info(f"[{self.run_id}] Pipeline finished with status: {status}. Metrics: {json.dumps(self.metrics)}")
+        return self.metrics

@@ -1,0 +1,35 @@
+import os
+import pandas as pd
+import pytest
+from pipeline import DataPipeline
+from generator import generate_datasets
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_data():
+    generate_datasets(seed=42)
+
+def test_happy_path_and_idempotency():
+    pipeline = DataPipeline("data/sample_input.csv")
+    report = pipeline.run_workflow()
+    assert os.path.exists(report)
+    
+    report_rerun = pipeline.run_workflow()
+    assert os.path.exists(report_rerun)
+
+def test_empty_input_handling(tmp_path):
+    empty_file = tmp_path / "empty.csv"
+    empty_file.write_text("transaction_id,customer_id,amount,transaction_date,status\n")
+    
+    pipeline = DataPipeline(str(empty_file))
+    with pytest.raises(Exception):
+        pipeline.run_workflow()
+
+def test_quarantine_rejects():
+    pipeline = DataPipeline("data/sample_input.csv")
+    raw_df = pipeline.task_ingest()
+    pipeline.task_validate_and_quarantine(raw_df)
+    
+    rejects_path = "output/quarantine_rejects.csv"
+    assert os.path.exists(rejects_path)
+    rejects_df = pd.read_csv(rejects_path)
+    assert len(rejects_df) > 0

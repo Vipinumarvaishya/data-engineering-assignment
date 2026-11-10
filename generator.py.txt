@@ -1,0 +1,45 @@
+import pandas as pd
+import numpy as np
+import os
+
+def generate_datasets(seed=42):
+    np.random.seed(seed)
+    os.makedirs("data", exist_ok=True)
+    
+    small_data = [
+        {"transaction_id": "TXN-001", "customer_id": "CUST-101", "amount": 250.50, "transaction_date": "2026-06-01T10:00:00Z", "status": "COMPLETED"},
+        {"transaction_id": "TXN-002", "customer_id": "CUST-102", "amount": -50.00, "transaction_date": "2026-06-01T10:05:00Z", "status": "COMPLETED"},
+        {"transaction_id": "TXN-001", "customer_id": "CUST-101", "amount": 250.50, "transaction_date": "2026-06-01T10:00:00Z", "status": "COMPLETED"},
+        {"transaction_id": "TXN-003", "customer_id": None, "amount": 100.00, "transaction_date": "2026-06-01T10:10:00Z", "status": "PENDING"},
+        {"transaction_id": "MALFORMED", "customer_id": "CUST-103", "amount": "ABC", "transaction_date": "INVALID_DATE", "status": "FAILED"},
+        {"transaction_id": "TXN-004", "customer_id": "CUST-104", "amount": 500.00, "transaction_date": "2026-05-15T08:00:00Z", "status": "COMPLETED"},
+        {"transaction_id": "TXN-005", "customer_id": "CUST-105", "amount": 1200.00, "transaction_date": "2026-06-01T10:30:00Z", "status": "COMPLETED"}
+    ]
+    df_small = pd.DataFrame(small_data)
+    df_small.to_csv("data/sample_input.csv", index=False)
+    
+    n_records = 105000
+    txn_ids = [f"TXN-{i:07d}" for i in range(1, n_records + 1)]
+    cust_ids = [f"CUST-{np.random.randint(100, 500)}" for _ in range(n_records)]
+    amounts = np.random.exponential(scale=150.0, size=n_records).round(2)
+    amounts[np.random.choice(n_records, 500)] = -10.0
+    
+    dates = pd.date_range(start="2026-01-01", periods=1000, freq="H")
+    tx_dates = np.random.choice(dates, n_records).astype(str)
+    statuses = np.random.choice(["COMPLETED", "PENDING", "FAILED", "CANCELLED"], size=n_records, p=[0.75, 0.15, 0.05, 0.05])
+    
+    df_large = pd.DataFrame({
+        "transaction_id": txn_ids,
+        "customer_id": cust_ids,
+        "amount": amounts,
+        "transaction_date": tx_dates,
+        "status": statuses
+    })
+    
+    df_large = pd.concat([df_large, df_large.iloc[:1000]], ignore_index=True)
+    df_large.loc[np.random.choice(n_records, 200), "customer_id"] = None
+    df_large.to_csv("data/large_input.csv", index=False)
+    print("Datasets generated successfully in 'data/' folder!")
+
+if __name__ == "__main__":
+    generate_datasets()
